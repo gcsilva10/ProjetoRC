@@ -7,8 +7,6 @@
 #include <time.h>
 #include <sys/select.h>
 #include <sys/time.h>
-#include <pthread.h>
-#include <errno.h>
 #include "powerudp.h"
 
 #define TCP_PORT 12345
@@ -16,7 +14,6 @@
 #define MCAST_PORT 54321
 #define PSK "minha_chave_preconfigurada"
 #define BUFFER_SIZE 1024
-#define MAX_THREADS 50
 
 /* Lista simples de clientes registados (IP e porta TCP) */
 typedef struct {
@@ -32,13 +29,10 @@ static ConfigMessage current_config = {1,1,1,1000,5};
 static int running = 1;
 static int listen_fd = -1;
 
-// Mutex para proteger o acesso à lista de clientes
-static pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
-
 /* Protótipos de funções */
 void handle_signal(int sig);
 void cleanup_clients();
-void *handle_client_connection(void *arg);
+void handle_new_registration(int client_fd);
 void multicast_config();
 
 /* Handler para sinais de terminação */
@@ -48,9 +42,8 @@ void handle_signal(int sig) {
     if (listen_fd >= 0) close(listen_fd);
 }
 
-/* Limpa registros de clientes inativos */
+/* Limpa registros de clientes inativos (não implementado completamente) */
 void cleanup_clients() {
-    pthread_mutex_lock(&clients_mutex);
     time_t now = time(NULL);
     for (int i = 0; i < client_count; i++) {
         if (clients[i].active && now - clients[i].last_seen > 300) { // 5 minutos
@@ -60,31 +53,22 @@ void cleanup_clients() {
             clients[i].active = 0;
         }
     }
-    pthread_mutex_unlock(&clients_mutex);
 }
 
-/* Thread para lidar com uma conexão de cliente */
-void *handle_client_connection(void *arg) {
-    int client_fd = *((int *)arg);
-    free(arg);  // Liberar memória alocada para o argumento
-    
+void handle_new_registration(int client_fd) {
     RegisterMessage reg;
     char buffer[BUFFER_SIZE];
     int bytes_read;
-    
-    printf("Nova thread iniciada para cliente (fd=%d)\n", client_fd);
     
     bytes_read = read(client_fd, buffer, BUFFER_SIZE);
     if (bytes_read <= 0) {
         perror("read");
         close(client_fd);
-        return NULL;
+        return;
     }
     
     // Verificar se é um pedido de registro ou de configuração
     if (bytes_read == sizeof(RegisterMessage)) {
-        pthread_mutex_lock(&clients_mutex);
-        
         // Provavelmente um pedido de registro
         memcpy(&reg, buffer, sizeof(reg));
         if (strcmp(reg.psk, PSK) == 0 && client_count < MAX_CLIENTS) {
@@ -120,13 +104,9 @@ void *handle_client_connection(void *arg) {
                 clients[client_idx].last_seen = time(NULL);
             }
             
-            pthread_mutex_unlock(&clients_mutex);
-            
             // Enviar ACK por TCP
             write(client_fd, "OK", 2);
         } else {
-            pthread_mutex_unlock(&clients_mutex);
-            
             if (strcmp(reg.psk, PSK) != 0) {
                 printf("Registro rejeitado: PSK inválida\n");
             } else {
@@ -147,9 +127,7 @@ void *handle_client_connection(void *arg) {
         printf("  Retransmissões máximas: %d\n", new_config.max_retries);
         
         // Atualizar configuração atual
-        pthread_mutex_lock(&clients_mutex);
         memcpy(&current_config, &new_config, sizeof(ConfigMessage));
-        pthread_mutex_unlock(&clients_mutex);
         
         // Enviar ACK
         write(client_fd, "OK", 2);
@@ -163,8 +141,6 @@ void *handle_client_connection(void *arg) {
     }
     
     close(client_fd);
-    printf("Thread de cliente encerrada (fd=%d)\n", client_fd);
-    return NULL;
 }
 
 void multicast_config() {
@@ -221,7 +197,7 @@ int main() {
     memset(&serv, 0, sizeof(serv));
     serv.sin_family = AF_INET;
     serv.sin_port = htons(TCP_PORT);
-    serv.sin_addr.s_addr = htonl(INADDR_ANY);
+    serv.sin_addr.s_addr = htonl(INADDR_ANY);  // Explicitamente bind em todas as interfaces
     
     printf("Tentando vincular a todas as interfaces (0.0.0.0:%d)...\n", TCP_PORT);
     if (bind(listen_fd, (struct sockaddr*)&serv, sizeof(serv)) < 0) {
@@ -231,7 +207,7 @@ int main() {
     }
     printf("Socket TCP vinculado com sucesso\n");
     
-    if (listen(listen_fd, MAX_THREADS) < 0) {
+    if (listen(listen_fd, 5) < 0) {
         perror("listen");
         close(listen_fd);
         return 1;
@@ -246,47 +222,47 @@ int main() {
     printf("  Timeout base: %d ms\n", current_config.base_timeout);
     printf("  Retransmissões máximas: %d\n", current_config.max_retries);
     
-    /* 2) Loop principal com threads */
+    /* 2) Loop principal */
+    fd_set rfds;
+    struct timeval tv;
+    
     while (running) {
-        struct sockaddr_in client_addr;
-        socklen_t client_len = sizeof(client_addr);
+        FD_ZERO(&rfds);
+        FD_SET(listen_fd, &rfds);
         
-        // Aceitar nova conexão
-        int *client_fd = malloc(sizeof(int));
-        *client_fd = accept(listen_fd, (struct sockaddr*)&client_addr, &client_len);
+        // Timeout para tratamento periódico
+        tv.tv_sec = 5;
+        tv.tv_usec = 0;
         
-        if (*client_fd < 0) {
-            if (running) {
-                perror("accept");
-            }
-            free(client_fd);
-            continue;
-        }
+        int ret = select(listen_fd + 1, &rfds, NULL, NULL, &tv);
         
-        printf("Nova conexão de %s:%d\n", 
-              inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
-        
-        // Criar thread para lidar com o cliente
-        pthread_t thread_id;
-        if (pthread_create(&thread_id, NULL, handle_client_connection, client_fd) != 0) {
-            fprintf(stderr, "Erro ao criar thread para cliente: %s\n", strerror(errno));
-            close(*client_fd);
-            free(client_fd);
-            continue;
-        }
-        
-        // Desanexar a thread para que ela seja liberada automaticamente
-        pthread_detach(thread_id);
-        
-        // A cada 5 conexões, limpar clientes inativos
-        static int conn_count = 0;
-        if (++conn_count % 5 == 0) {
+        if (ret < 0) {
+            if (running) perror("select");
+            break;
+        } else if (ret == 0) {
+            // Timeout: limpar clientes inativos periodicamente
             cleanup_clients();
+            continue;
+        }
+        
+        if (FD_ISSET(listen_fd, &rfds)) {
+            struct sockaddr_in client_addr;
+            socklen_t client_len = sizeof(client_addr);
+            int client_fd = accept(listen_fd, (struct sockaddr*)&client_addr, &client_len);
+            
+            if (client_fd < 0) {
+                if (running) perror("accept");
+                continue;
+            }
+            
+            printf("Nova conexão de %s:%d\n", 
+                  inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+            
+            handle_new_registration(client_fd);
         }
     }
     
     /* 3) Limpeza final */
-    pthread_mutex_destroy(&clients_mutex);
     if (listen_fd >= 0) close(listen_fd);
     printf("Servidor encerrado.\n");
     return 0;

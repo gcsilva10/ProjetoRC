@@ -18,7 +18,7 @@ TEST_BIN = test_client
 all: $(SERVER_BIN) $(TEST_BIN)
 
 $(SERVER_BIN): $(SERVER_SRC) $(HEADERS)
-	$(CC) $(CFLAGS) -o $@ $(SERVER_SRC) -pthread
+	$(CC) $(CFLAGS) -o $@ $(SERVER_SRC)
 
 $(TEST_BIN): $(TEST_SRC) $(CLIENT_LIB) $(HEADERS)
 	$(CC) $(CFLAGS) -o $@ $(TEST_SRC) $(CLIENT_LIB) -lpthread
