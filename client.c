@@ -70,18 +70,35 @@ int init_protocol_with_port(const char *server_ip, int server_port, const char *
     
     // 1) TCP
     tcp_sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (tcp_sock < 0) {
+        perror("socket TCP");
+        return -1;
+    }
+    printf("Socket TCP criado com sucesso\n");
+
     memset(&server_tcp_addr, 0, sizeof(server_tcp_addr));
     server_tcp_addr.sin_family = AF_INET;
     server_tcp_addr.sin_port   = htons(server_port);
-    inet_pton(AF_INET, server_ip, &server_tcp_addr.sin_addr);
+    if (inet_pton(AF_INET, server_ip, &server_tcp_addr.sin_addr) <= 0) {
+        perror("inet_pton falhou");
+        close(tcp_sock);
+        return -1;
+    }
+    printf("Tentando conectar a %s:%d...\n", server_ip, server_port);
 
     struct timeval tv = { .tv_sec = TCP_TIMEOUT_SEC, .tv_usec = 0 };
-    setsockopt(tcp_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    if (setsockopt(tcp_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+        perror("setsockopt timeout");
+        close(tcp_sock);
+        return -1;
+    }
 
     if (connect(tcp_sock, (struct sockaddr*)&server_tcp_addr, sizeof(server_tcp_addr)) < 0) {
         perror("connect TCP");
+        close(tcp_sock);
         return -1;
     }
+    printf("Conexão TCP estabelecida com sucesso\n");
     // envia RegisterMessage
     RegisterMessage reg;
     strncpy(reg.psk, psk, PSK_LEN);

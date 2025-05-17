@@ -182,6 +182,7 @@ int main() {
         perror("socket");
         return 1;
     }
+    printf("Socket TCP criado com sucesso\n");
     
     /* Permitir reutilização de endereço */
     int reuse = 1;
@@ -190,6 +191,7 @@ int main() {
         close(listen_fd);
         return 1;
     }
+    printf("Opção SO_REUSEADDR configurada\n");
     
     struct sockaddr_in serv = { .sin_family=AF_INET, .sin_port=htons(TCP_PORT), .sin_addr.s_addr=INADDR_ANY };
     if (bind(listen_fd, (void*)&serv, sizeof(serv)) < 0) {
@@ -197,12 +199,14 @@ int main() {
         close(listen_fd);
         return 1;
     }
+    printf("Socket TCP vinculado à porta %d\n", TCP_PORT);
     
     if (listen(listen_fd, 5) < 0) {
         perror("listen");
         close(listen_fd);
         return 1;
     }
+    printf("Socket TCP escutando na porta %d\n", TCP_PORT);
     
     printf("Servidor PowerUDP iniciado!\n");
     printf("Configuração inicial:\n");
@@ -211,7 +215,6 @@ int main() {
     printf("  Sequência: %s\n", current_config.enable_sequence ? "Ativada" : "Desativada");
     printf("  Timeout base: %d ms\n", current_config.base_timeout);
     printf("  Retransmissões máximas: %d\n", current_config.max_retries);
-    printf("Servidor TCP a escutar em %d...\n", TCP_PORT);
     
     /* 2) Loop principal */
     fd_set rfds;
