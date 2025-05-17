@@ -9,11 +9,12 @@
 #include <sys/select.h>
 #include <time.h>
 #include <pthread.h>
+#include <errno.h>
 #include "powerudp.h"
 
 // Em vez de usar uma porta fixa, torna-a configurável
 // #define DEFAULT_UDP_PORT 10000
-#define TCP_TIMEOUT_SEC 5
+#define TCP_TIMEOUT_SEC 2  // Reduzido de 5 para 2 segundos
 #define MCAST_ADDR "239.0.0.1"
 #define MCAST_PORT 54321
 
@@ -92,9 +93,10 @@ int init_protocol_with_port(const char *server_ip, int server_port, const char *
         close(tcp_sock);
         return -1;
     }
+    printf("Timeout TCP configurado para %d segundos\n", TCP_TIMEOUT_SEC);
 
     if (connect(tcp_sock, (struct sockaddr*)&server_tcp_addr, sizeof(server_tcp_addr)) < 0) {
-        perror("connect TCP");
+        printf("Erro ao conectar: %s (errno=%d)\n", strerror(errno), errno);
         close(tcp_sock);
         return -1;
     }

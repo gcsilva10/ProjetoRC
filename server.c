@@ -193,20 +193,26 @@ int main() {
     }
     printf("Opção SO_REUSEADDR configurada\n");
     
-    struct sockaddr_in serv = { .sin_family=AF_INET, .sin_port=htons(TCP_PORT), .sin_addr.s_addr=INADDR_ANY };
-    if (bind(listen_fd, (void*)&serv, sizeof(serv)) < 0) {
+    struct sockaddr_in serv;
+    memset(&serv, 0, sizeof(serv));
+    serv.sin_family = AF_INET;
+    serv.sin_port = htons(TCP_PORT);
+    serv.sin_addr.s_addr = htonl(INADDR_ANY);  // Explicitamente bind em todas as interfaces
+    
+    printf("Tentando vincular a todas as interfaces (0.0.0.0:%d)...\n", TCP_PORT);
+    if (bind(listen_fd, (struct sockaddr*)&serv, sizeof(serv)) < 0) {
         perror("bind");
         close(listen_fd);
         return 1;
     }
-    printf("Socket TCP vinculado à porta %d\n", TCP_PORT);
+    printf("Socket TCP vinculado com sucesso\n");
     
     if (listen(listen_fd, 5) < 0) {
         perror("listen");
         close(listen_fd);
         return 1;
     }
-    printf("Socket TCP escutando na porta %d\n", TCP_PORT);
+    printf("Socket TCP escutando na porta %d em todas as interfaces\n", TCP_PORT);
     
     printf("Servidor PowerUDP iniciado!\n");
     printf("Configuração inicial:\n");
