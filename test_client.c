@@ -4,14 +4,15 @@
 #include <unistd.h>
 #include "powerudp.h"
 
-#define SERVER_IP "127.0.0.1"  // Mudar para o IP do servidor real
+#define DEFAULT_SERVER_IP "127.0.0.1"  // IP padrão do servidor
 #define SERVER_PORT 12345
 #define PSK "minha_chave_preconfigurada"
 
 void print_usage(const char *progname) {
-    printf("Uso: %s [-p porta_local] <comando> [argumentos]\n", progname);
+    printf("Uso: %s [-p porta_local] [-s ip_servidor] <comando> [argumentos]\n", progname);
     printf("Opções:\n");
     printf("  -p porta_local         - Porta UDP local a utilizar (default: aleatória)\n");
+    printf("  -s ip_servidor         - IP do servidor (default: %s)\n", DEFAULT_SERVER_IP);
     printf("Comandos:\n");
     printf("  send <ip[:porta]> <mensagem>     - Envia mensagem para outro cliente\n");
     printf("  receive                  - Aguarda mensagem de outro cliente\n");
@@ -31,14 +32,25 @@ void print_usage(const char *progname) {
 int main(int argc, char *argv[]) {
     int local_port = 0; // 0 significa porta aleatória
     int arg_index = 1;
+    const char *server_ip = DEFAULT_SERVER_IP;
     
-    // Verificar se temos a opção -p
-    if (argc > 2 && strcmp(argv[1], "-p") == 0) {
-        local_port = atoi(argv[2]);
-        arg_index = 3;
-        
-        if (local_port <= 0 || local_port > 65535) {
-            fprintf(stderr, "Porta inválida: %d\n", local_port);
+    // Verificar opções
+    while (arg_index < argc && argv[arg_index][0] == '-') {
+        if (strcmp(argv[arg_index], "-p") == 0 && arg_index + 1 < argc) {
+            local_port = atoi(argv[arg_index + 1]);
+            if (local_port <= 0 || local_port > 65535) {
+                fprintf(stderr, "Porta inválida: %d\n", local_port);
+                print_usage(argv[0]);
+                return 1;
+            }
+            arg_index += 2;
+        }
+        else if (strcmp(argv[arg_index], "-s") == 0 && arg_index + 1 < argc) {
+            server_ip = argv[arg_index + 1];
+            arg_index += 2;
+        }
+        else {
+            fprintf(stderr, "Opção inválida: %s\n", argv[arg_index]);
             print_usage(argv[0]);
             return 1;
         }
@@ -51,8 +63,8 @@ int main(int argc, char *argv[]) {
     
     // Inicializar protocolo com a porta especificada
     printf("Conectando ao servidor %s:%d (porta local UDP: %d)...\n", 
-           SERVER_IP, SERVER_PORT, local_port ? local_port : 0);
-    if (init_protocol_with_port(SERVER_IP, SERVER_PORT, PSK, local_port) < 0) {
+           server_ip, SERVER_PORT, local_port ? local_port : 0);
+    if (init_protocol_with_port(server_ip, SERVER_PORT, PSK, local_port) < 0) {
         fprintf(stderr, "Falha ao inicializar protocolo\n");
         return 1;
     }
