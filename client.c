@@ -4,6 +4,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <netinet/in.h>
 #include <sys/select.h>
 #include <time.h>
 #include <pthread.h>
@@ -34,6 +35,7 @@ static int should_drop_packet() {
 
 // Thread para receber atualizações multicast em background
 static void *multicast_listener(void *arg) {
+    (void)arg;  // Explicitly acknowledge unused parameter
     struct sockaddr_in maddr;
     socklen_t addrlen = sizeof(maddr);
     ConfigMessage config;
@@ -274,7 +276,7 @@ int send_message(const char *destination, const char *message, int len) {
             int received = recvfrom(udp_sock, &resp, sizeof(resp), 0,
                                    (struct sockaddr*)&resp_addr, &resp_len);
             
-            if (received >= sizeof(PowerUDPHeader)) {
+            if ((size_t)received >= sizeof(PowerUDPHeader)) {
                 if (resp.header.seq_num == pudp_msg.header.seq_num) {
                     if (resp.header.type == PUDP_ACK) {
                         printf("Recebido ACK para seq=%u\n", resp.header.seq_num);
@@ -330,7 +332,7 @@ int receive_message(char *buffer, int bufsize) {
     int received = recvfrom(udp_sock, &pudp_msg, sizeof(pudp_msg), 0,
                            (struct sockaddr*)&src, &src_len);
     
-    if (received < sizeof(PowerUDPHeader)) {
+    if ((size_t)received < sizeof(PowerUDPHeader)) {
         return -1;  // Mensagem inválida
     }
     

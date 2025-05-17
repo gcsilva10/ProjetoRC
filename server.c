@@ -114,7 +114,7 @@ void handle_new_registration(int client_fd) {
             }
             write(client_fd, "NO", 2);
         }
-    } else if (bytes_read >= (1 + sizeof(ConfigMessage)) && buffer[0] == 'C') {
+    } else if ((size_t)bytes_read >= (1 + sizeof(ConfigMessage)) && buffer[0] == 'C') {
         // Pedido de configuração
         ConfigMessage new_config;
         memcpy(&new_config, buffer + 1, sizeof(ConfigMessage));
