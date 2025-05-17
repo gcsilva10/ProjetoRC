@@ -236,12 +236,18 @@ int send_message(const char *destination, const char *message, int len) {
     if (port_sep != NULL) {
         *port_sep = '\0';
         dest_port = atoi(port_sep + 1);
+        printf("DEBUG: Porta especificada no destino: %d\n", dest_port);
+    } else {
+        printf("DEBUG: Usando porta padrão: %d\n", dest_port);
     }
     
     struct sockaddr_in dest = { .sin_family = AF_INET, .sin_port = htons(dest_port) };
-    inet_pton(AF_INET, dest_ip, &dest.sin_addr);
+    if (inet_pton(AF_INET, dest_ip, &dest.sin_addr) <= 0) {
+        fprintf(stderr, "Erro: IP de destino inválido: %s\n", dest_ip);
+        return -1;
+    }
 
-    printf("Enviando para %s:%d\n", dest_ip, dest_port);
+    printf("DEBUG: Enviando para %s:%d (socket UDP: %d)\n", dest_ip, dest_port, udp_sock);
     
     PowerUDPMessage pudp_msg;
     pudp_msg.header.type = PUDP_DATA;
@@ -261,10 +267,14 @@ int send_message(const char *destination, const char *message, int len) {
     while (!success && attempts <= max) {
         // Enviar pacote (se não estiver injetando perda)
         if (!should_drop_packet()) {
-            sendto(udp_sock, &pudp_msg, total_size, 0, 
+            ssize_t sent = sendto(udp_sock, &pudp_msg, total_size, 0, 
                    (struct sockaddr*)&dest, sizeof(dest));
-            printf("Enviado pacote seq=%u para %s (tentativa %d)\n", 
-                   pudp_msg.header.seq_num, destination, attempts + 1);
+            if (sent < 0) {
+                fprintf(stderr, "Erro no sendto: %s (errno=%d)\n", strerror(errno), errno);
+                return -1;
+            }
+            printf("DEBUG: Enviado pacote seq=%u para %s:%d (tentativa %d, bytes=%zd)\n", 
+                   pudp_msg.header.seq_num, dest_ip, dest_port, attempts + 1, sent);
         } else {
             printf("Simulando perda do pacote seq=%u (tentativa %d)\n", 
                    pudp_msg.header.seq_num, attempts + 1);
@@ -349,16 +359,31 @@ int receive_message(char *buffer, int bufsize) {
     struct sockaddr_in src;
     socklen_t src_len = sizeof(src);
     
+    printf("DEBUG: Aguardando mensagem no socket UDP %d...\n", udp_sock);
+    
     int received = recvfrom(udp_sock, &pudp_msg, sizeof(pudp_msg), 0,
                            (struct sockaddr*)&src, &src_len);
     
+    if (received < 0) {
+        fprintf(stderr, "Erro no recvfrom: %s (errno=%d)\n", strerror(errno), errno);
+        return -1;
+    }
+    
+    printf("DEBUG: Recebido %d bytes de %s:%d\n", 
+           received, 
+           inet_ntoa(src.sin_addr), 
+           ntohs(src.sin_port));
+    
     if ((size_t)received < sizeof(PowerUDPHeader)) {
-        return -1;  // Mensagem inválida
+        fprintf(stderr, "Mensagem muito pequena (recebido=%d, esperado>=%zu)\n", 
+                received, sizeof(PowerUDPHeader));
+        return -1;
     }
     
     // Verificar se é uma mensagem de dados
     if (pudp_msg.header.type != PUDP_DATA) {
-        return -1;  // Não é uma mensagem de dados
+        printf("DEBUG: Ignorando mensagem não-dados (tipo=%d)\n", pudp_msg.header.type);
+        return -1;
     }
     
     // Verificar sequência se ativado
