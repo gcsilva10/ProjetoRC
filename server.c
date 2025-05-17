@@ -5,6 +5,8 @@
 #include <arpa/inet.h>
 #include <signal.h>
 #include <time.h>
+#include <sys/select.h>
+#include <sys/time.h>
 #include "powerudp.h"
 
 #define TCP_PORT 12345
