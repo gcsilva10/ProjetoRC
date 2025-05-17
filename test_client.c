@@ -48,12 +48,6 @@ void interactive_send_mode(const char *dest_ip) {
             len--;
         }
         
-        // Verificar se é para terminar
-        if (strcmp(message, "END") == 0) {
-            printf("Encerrando modo de envio...\n");
-            break;
-        }
-        
         // Enviar a mensagem
         printf("Enviando mensagem para %s: \"%s\"\n", dest_ip, message);
         if (send_message(dest_ip, message, len) < 0) {
@@ -66,19 +60,25 @@ void interactive_send_mode(const char *dest_ip) {
         printf("Mensagem enviada com sucesso!\n");
         printf("Estatísticas: %d retransmissões, %d ms de tempo total\n", 
                retrans, del_time);
+        
+        // Verificar se é para terminar
+        if (strcmp(message, "END") == 0) {
+            printf("Mensagem END enviada. Encerrando...\n");
+            break;
+        }
     }
 }
 
 // Função para modo de recebimento contínuo
 void continuous_receive_mode() {
-    printf("Modo de recebimento iniciado. Aguardando mensagens (END para terminar)...\n");
+    printf("Modo de recebimento iniciado. Aguardando mensagens (receberá até mensagem END)...\n");
     char buffer[MAX_MSG_SIZE];
     
     while (1) {
         int received = receive_message(buffer, sizeof(buffer));
         
         if (received < 0) {
-            fprintf(stderr, "Erro ao receber mensagem\n");
+            fprintf(stderr, "Erro ao receber mensagem, tentando novamente...\n");
             continue;
         }
         
@@ -87,7 +87,7 @@ void continuous_receive_mode() {
         
         // Verificar se é para terminar
         if (strcmp(buffer, "END") == 0) {
-            printf("Recebido comando de término. Encerrando...\n");
+            printf("Recebida mensagem END. Encerrando...\n");
             break;
         }
     }
