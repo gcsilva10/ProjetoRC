@@ -176,12 +176,18 @@ void handle_new_registration(int client_fd) {
             new_config.max_retries = 1;     // mínimo 1 tentativa
         }
         
-        printf("\n[DEBUG] Servidor - Nova configuração recebida:\n");
-        printf("  - Retransmissão: %s\n", new_config.enable_retransmission ? "Ativada" : "Desativada");
-        printf("  - Backoff: %s\n", new_config.enable_backoff ? "Ativado" : "Desativado");
-        printf("  - Sequência: %s\n", new_config.enable_sequence ? "Ativada" : "Desativada");
-        printf("  - Timeout base: %d ms\n", new_config.base_timeout);
-        printf("  - Retransmissões máximas: %d\n\n", new_config.max_retries);
+        printf("\n╔════════════════════════════════════════════════════════╗\n");
+        printf("║         Nova Configuração PowerUDP Solicitada           ║\n");
+        printf("╠════════════════════════════════════════════════════════╣\n");
+        printf("║ Solicitante: %-43s ║\n", inet_ntoa(peer.sin_addr));
+        printf("║ Porta:       %-43d ║\n", ntohs(peer.sin_port));
+        printf("╠════════════════════════════════════════════════════════╣\n");
+        printf("║ Retransmissão:          %-30s ║\n", new_config.enable_retransmission ? "ATIVADA" : "DESATIVADA");
+        printf("║ Backoff Exponencial:     %-30s ║\n", new_config.enable_backoff ? "ATIVADO" : "DESATIVADO");
+        printf("║ Controle de Sequência:   %-30s ║\n", new_config.enable_sequence ? "ATIVADO" : "DESATIVADO");
+        printf("║ Timeout Base:            %-30d ms ║\n", new_config.base_timeout);
+        printf("║ Retransmissões Máximas:  %-30d ║\n", new_config.max_retries);
+        printf("╚════════════════════════════════════════════════════════╝\n");
         
         // Atualizar configuração atual
         memcpy(&current_config, &new_config, sizeof(ConfigMessage));
@@ -192,7 +198,7 @@ void handle_new_registration(int client_fd) {
             write(client_fd, "ER", 2);
         } else {
             // Enviar multicast logo de seguida
-            printf("Enviando nova configuração para todos os clientes...\n");
+            printf("\nDistribuindo nova configuração para todos os clientes...\n");
             multicast_config();
         }
     } else {

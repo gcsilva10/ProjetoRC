@@ -49,15 +49,21 @@ static void *multicast_listener(void *arg) {
             if (config.max_retries == 0) config.max_retries = 5;      // default 5 tentativas
             
             memcpy(&current_config, &config, sizeof(ConfigMessage));
-            printf("\n[DEBUG] Cliente - Nova configuração recebida via multicast:\n");
-            printf("  - Retransmissão: %s\n", config.enable_retransmission ? "Ativada" : "Desativada");
-            printf("  - Backoff: %s\n", config.enable_backoff ? "Ativado" : "Desativado");
-            printf("  - Sequência: %s\n", config.enable_sequence ? "Ativada" : "Desativada");
-            printf("  - Timeout base: %d ms\n", config.base_timeout);
-            printf("  - Retransmissões máximas: %d\n", config.max_retries);
-            printf("  - Origem: %s:%d\n\n", 
-                   inet_ntoa(maddr.sin_addr), 
-                   ntohs(maddr.sin_port));
+            
+            printf("\n╔════════════════════════════════════════════════════════╗\n");
+            printf("║           Nova Configuração PowerUDP Recebida           ║\n");
+            printf("╠════════════════════════════════════════════════════════╣\n");
+            printf("║ Origem: %-45s ║\n", inet_ntoa(maddr.sin_addr));
+            printf("║ Porta:  %-45d ║\n", ntohs(maddr.sin_port));
+            printf("╠════════════════════════════════════════════════════════╣\n");
+            printf("║ Retransmissão:          %-30s ║\n", config.enable_retransmission ? "ATIVADA" : "DESATIVADA");
+            printf("║ Backoff Exponencial:     %-30s ║\n", config.enable_backoff ? "ATIVADO" : "DESATIVADO");
+            printf("║ Controle de Sequência:   %-30s ║\n", config.enable_sequence ? "ATIVADO" : "DESATIVADO");
+            printf("║ Timeout Base:            %-30d ms ║\n", config.base_timeout);
+            printf("║ Retransmissões Máximas:  %-30d ║\n", config.max_retries);
+            printf("╚════════════════════════════════════════════════════════╝\n\n");
+            
+            fflush(stdout);  // Garantir que a mensagem seja exibida imediatamente
         }
     }
     return NULL;
