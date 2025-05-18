@@ -48,6 +48,11 @@ void interactive_send_mode(const char *dest_ip) {
             len--;
         }
         
+        // Verificar se é para terminar antes de enviar
+        if (strcmp(message, "END") == 0) {
+            printf("Enviando mensagem END e encerrando...\n");
+        }
+        
         // Enviar a mensagem
         printf("Enviando mensagem para %s: \"%s\"\n", dest_ip, message);
         if (send_message(dest_ip, message, len) < 0) {
@@ -61,9 +66,9 @@ void interactive_send_mode(const char *dest_ip) {
         printf("Estatísticas: %d retransmissões, %d ms de tempo total\n", 
                retrans, del_time);
         
-        // Verificar se é para terminar
+        // Verificar se é para terminar após envio bem-sucedido
         if (strcmp(message, "END") == 0) {
-            printf("Mensagem END enviada. Encerrando...\n");
+            printf("Mensagem END enviada com sucesso. Encerrando...\n");
             break;
         }
     }
