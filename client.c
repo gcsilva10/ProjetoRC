@@ -39,21 +39,44 @@ static void *multicast_listener(void *arg) {
     struct sockaddr_in maddr;
     socklen_t addrlen = sizeof(maddr);
     ConfigMessage config;
+    char mcast_addr_str[INET_ADDRSTRLEN];
+    
+    // Configurar timeout para o recvfrom
+    struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };  // 1 segundo timeout
+    if (setsockopt(udp_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+        perror("setsockopt SO_RCVTIMEO em multicast_listener");
+        return NULL;
+    }
 
-    while (1) {
+    printf("Thread multicast iniciada (escutando em %s:%d)\n", 
+           MCAST_ADDR, MCAST_PORT);
+
+    while (running) {  // Usar a variável global running para controle
         int received = recvfrom(udp_sock, &config, sizeof(config), 0,
                                (struct sockaddr*)&maddr, &addrlen);
+                               
+        if (received < 0) {
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                perror("recvfrom em multicast_listener");
+            }
+            continue;
+        }
+        
         if (received == sizeof(ConfigMessage)) {
             // Validar valores da configuração
             if (config.base_timeout == 0) config.base_timeout = 1000;  // default 1 segundo
             if (config.max_retries == 0) config.max_retries = 5;      // default 5 tentativas
             
+            // Converter endereço do remetente para string
+            inet_ntop(AF_INET, &maddr.sin_addr, mcast_addr_str, INET_ADDRSTRLEN);
+            
+            // Atualizar configuração atual
             memcpy(&current_config, &config, sizeof(ConfigMessage));
             
             printf("\n╔════════════════════════════════════════════════════════╗\n");
             printf("║           Nova Configuração PowerUDP Recebida           ║\n");
             printf("╠════════════════════════════════════════════════════════╣\n");
-            printf("║ Origem: %-45s ║\n", inet_ntoa(maddr.sin_addr));
+            printf("║ Origem: %-45s ║\n", mcast_addr_str);
             printf("║ Porta:  %-45d ║\n", ntohs(maddr.sin_port));
             printf("╠════════════════════════════════════════════════════════╣\n");
             printf("║ Retransmissão:          %-30s ║\n", config.enable_retransmission ? "ATIVADA" : "DESATIVADA");
@@ -66,6 +89,8 @@ static void *multicast_listener(void *arg) {
             fflush(stdout);  // Garantir que a mensagem seja exibida imediatamente
         }
     }
+    
+    printf("Thread multicast finalizada\n");
     return NULL;
 }
 
@@ -105,34 +130,59 @@ int init_protocol_with_port(const char *server_ip, int server_port, const char *
     // UDP + Multicast
     udp_sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (udp_sock < 0) { perror("socket UDP"); return -1; }
+
+    // Permitir reutilização de endereço e porta
+    int reuse = 1;
+    if (setsockopt(udp_sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
+        perror("setsockopt SO_REUSEADDR"); close(udp_sock); return -1;
+    }
+    if (setsockopt(udp_sock, SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse)) < 0) {
+        perror("setsockopt SO_REUSEPORT"); close(udp_sock); return -1;
+    }
+
+    // Bind na porta local
     struct sockaddr_in local = {
         .sin_family = AF_INET,
-        .sin_port   = htons(local_udp_port),
+        .sin_port = htons(local_udp_port),
         .sin_addr.s_addr = INADDR_ANY
     };
     if (bind(udp_sock, (struct sockaddr*)&local, sizeof(local)) < 0) {
         perror("bind UDP"); close(udp_sock); return -1;
     }
+
+    // Obter a porta atribuída se usamos porta 0
     if (local_udp_port == 0) {
         struct sockaddr_in actual;
         socklen_t alen = sizeof(actual);
-        if (getsockname(udp_sock, (struct sockaddr*)&actual, &alen) == 0)
+        if (getsockname(udp_sock, (struct sockaddr*)&actual, &alen) == 0) {
             local_udp_port = ntohs(actual.sin_port);
+        }
     }
-    printf("Cliente UDP local: %d\n", local_udp_port);
 
-    int reuse = 1;
-    setsockopt(udp_sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-
+    // Configurar socket para multicast
     struct ip_mreq mreq;
-    inet_pton(AF_INET, MCAST_ADDR, &mreq.imr_multiaddr);
+    if (inet_pton(AF_INET, MCAST_ADDR, &mreq.imr_multiaddr) <= 0) {
+        perror("inet_pton multicast"); close(udp_sock); return -1;
+    }
     mreq.imr_interface.s_addr = INADDR_ANY;
-    setsockopt(udp_sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq));
 
+    if (setsockopt(udp_sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0) {
+        perror("setsockopt IP_ADD_MEMBERSHIP");
+        close(udp_sock);
+        return -1;
+    }
+
+    // Criar thread para receber multicast
     pthread_t tid;
-    if (pthread_create(&tid, NULL, multicast_listener, NULL) == 0)
-        pthread_detach(tid);
+    int thread_err = pthread_create(&tid, NULL, multicast_listener, NULL);
+    if (thread_err != 0) {
+        fprintf(stderr, "Erro ao criar thread multicast: %s\n", strerror(thread_err));
+        close(udp_sock);
+        return -1;
+    }
+    pthread_detach(tid);
 
+    printf("Cliente UDP local: %d (Multicast ativo em %s)\n", local_udp_port, MCAST_ADDR);
     printf("Protocolo PowerUDP inicializado\n");
     return 0;
 }
