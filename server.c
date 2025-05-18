@@ -32,8 +32,14 @@ static ConfigMessage current_config = {1,1,1,1000,5};
 static int running = 1;
 static int listen_fd = -1;
 
+/* Protótipos de funções */
+void multicast_config(void);
+void handle_new_registration(int client_fd);
+void handle_client(int client_idx);
+
 // Função para tratar sinais de filhos terminados
 void handle_child_signal(int sig) {
+    (void)sig;  // Marcar parâmetro como usado intencionalmente
     int status;
     pid_t pid;
     
