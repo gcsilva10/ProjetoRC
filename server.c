@@ -162,13 +162,21 @@ void multicast_config() {
         return;
     }
     
-    // Definir TTL para pacotes multicast
-    unsigned char ttl = 1;
+    // Definir TTL para pacotes multicast (aumentado para alcançar mais hops)
+    unsigned char ttl = 32;  // Valor aumentado para passar por vários routers
     if (setsockopt(sock, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl)) < 0) {
         perror("setsockopt multicast TTL");
         close(sock);
         return;
     }
+    
+    printf("\n[DEBUG] Servidor - Configuração atual:\n");
+    printf("  - Retransmissão: %s\n", current_config.enable_retransmission ? "Ativada" : "Desativada");
+    printf("  - Backoff: %s\n", current_config.enable_backoff ? "Ativado" : "Desativado");
+    printf("  - Sequência: %s\n", current_config.enable_sequence ? "Ativada" : "Desativada");
+    printf("  - Timeout base: %d ms\n", current_config.base_timeout);
+    printf("  - Retransmissões máximas: %d\n", current_config.max_retries);
+    printf("  - TTL multicast: %d\n\n", ttl);
     
     // Validar configuração antes de enviar
     if (current_config.base_timeout < 100) {

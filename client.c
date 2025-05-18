@@ -44,15 +44,20 @@ static void *multicast_listener(void *arg) {
         int received = recvfrom(udp_sock, &config, sizeof(config), 0,
                                (struct sockaddr*)&maddr, &addrlen);
         if (received == sizeof(ConfigMessage)) {
-            if (config.base_timeout == 0) config.base_timeout = 1000;
-            if (config.max_retries == 0)  config.max_retries = 5;
+            // Validar valores da configuração
+            if (config.base_timeout == 0) config.base_timeout = 1000;  // default 1 segundo
+            if (config.max_retries == 0) config.max_retries = 5;      // default 5 tentativas
+            
             memcpy(&current_config, &config, sizeof(ConfigMessage));
-            printf("Nova configuração recebida via multicast:\n");
-            printf("  Retransmissão: %s\n", config.enable_retransmission ? "Ativada" : "Desativada");
-            printf("  Backoff: %s\n",        config.enable_backoff        ? "Ativado"  : "Desativado");
-            printf("  Sequência: %s\n",      config.enable_sequence       ? "Ativada"  : "Desativada");
-            printf("  Timeout base: %d ms\n", config.base_timeout);
-            printf("  Retransmissões máximas: %d\n", config.max_retries);
+            printf("\n[DEBUG] Cliente - Nova configuração recebida via multicast:\n");
+            printf("  - Retransmissão: %s\n", config.enable_retransmission ? "Ativada" : "Desativada");
+            printf("  - Backoff: %s\n", config.enable_backoff ? "Ativado" : "Desativado");
+            printf("  - Sequência: %s\n", config.enable_sequence ? "Ativada" : "Desativada");
+            printf("  - Timeout base: %d ms\n", config.base_timeout);
+            printf("  - Retransmissões máximas: %d\n", config.max_retries);
+            printf("  - Origem: %s:%d\n\n", 
+                   inet_ntoa(maddr.sin_addr), 
+                   ntohs(maddr.sin_port));
         }
     }
     return NULL;
