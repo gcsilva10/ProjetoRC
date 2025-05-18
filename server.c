@@ -1,3 +1,4 @@
+#define _DEFAULT_SOURCE  // Para usar usleep
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -197,7 +198,13 @@ void multicast_config() {
             break;
         } else {
             printf("Configuração enviada via multicast (tentativa %d)\n", i + 1);
-            if (i < 2) usleep(100000);  // 100ms entre tentativas
+            if (i < 2) {
+                struct timespec ts = {
+                    .tv_sec = 0,
+                    .tv_nsec = 100000000  // 100ms
+                };
+                nanosleep(&ts, NULL);
+            }
         }
     }
     
