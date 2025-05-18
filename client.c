@@ -226,28 +226,33 @@ int send_message(const char *destination, const char *message, int len) {
         return -1;
     }
     
-    // Use a porta do cliente de destino ou a porta padrão
-    int dest_port = local_udp_port; // Por padrão, assume mesma porta
-    
-    // Verifica se temos porta no formato IP:PORTA
+    // Parse do endereço de destino
     char dest_ip[64] = {0};
+    int dest_port = local_udp_port; // Default para compatibilidade
+    
     strncpy(dest_ip, destination, sizeof(dest_ip)-1);
     char *port_sep = strchr(dest_ip, ':');
     if (port_sep != NULL) {
         *port_sep = '\0';
         dest_port = atoi(port_sep + 1);
-        printf("DEBUG: Porta especificada no destino: %d\n", dest_port);
-    } else {
-        printf("DEBUG: Usando porta padrão: %d\n", dest_port);
+        if (dest_port <= 0 || dest_port > 65535) {
+            fprintf(stderr, "Erro: Porta de destino inválida: %d\n", dest_port);
+            return -1;
+        }
     }
     
-    struct sockaddr_in dest = { .sin_family = AF_INET, .sin_port = htons(dest_port) };
+    struct sockaddr_in dest = { 
+        .sin_family = AF_INET, 
+        .sin_port = htons(dest_port),
+        .sin_addr = {0}
+    };
+    
     if (inet_pton(AF_INET, dest_ip, &dest.sin_addr) <= 0) {
         fprintf(stderr, "Erro: IP de destino inválido: %s\n", dest_ip);
         return -1;
     }
 
-    printf("DEBUG: Enviando para %s:%d (socket UDP: %d)\n", dest_ip, dest_port, udp_sock);
+    printf("Enviando para %s:%d (socket UDP: %d)\n", dest_ip, dest_port, udp_sock);
     
     PowerUDPMessage pudp_msg;
     pudp_msg.header.type = PUDP_DATA;
@@ -283,7 +288,9 @@ int send_message(const char *destination, const char *message, int len) {
         // Calcular timeout (com backoff exponencial se ativado)
         int timeout_ms = tbase;
         if (current_config.enable_backoff && attempts > 0) {
-            timeout_ms = tbase * (1 << attempts);
+            // Limitar o backoff exponencial a no máximo 8 segundos
+            timeout_ms = tbase * (1 << (attempts < 3 ? attempts : 3));
+            if (timeout_ms > 8000) timeout_ms = 8000;
         }
         
         // Aguardar ACK com timeout
@@ -291,6 +298,8 @@ int send_message(const char *destination, const char *message, int len) {
             .tv_sec = timeout_ms / 1000, 
             .tv_usec = (timeout_ms % 1000) * 1000 
         };
+        
+        printf("Aguardando ACK por %d ms (tentativa %d)...\n", timeout_ms, attempts + 1);
         
         fd_set rfds;
         FD_ZERO(&rfds);
@@ -307,6 +316,14 @@ int send_message(const char *destination, const char *message, int len) {
                                    (struct sockaddr*)&resp_addr, &resp_len);
             
             if ((size_t)received >= sizeof(PowerUDPHeader)) {
+                // Verificar se a resposta veio do destino correto
+                if (resp_addr.sin_addr.s_addr != dest.sin_addr.s_addr || 
+                    resp_addr.sin_port != dest.sin_port) {
+                    printf("Ignorando resposta de endereço inesperado %s:%d\n",
+                           inet_ntoa(resp_addr.sin_addr), ntohs(resp_addr.sin_port));
+                    continue;
+                }
+                
                 if (resp.header.seq_num == pudp_msg.header.seq_num) {
                     if (resp.header.type == PUDP_ACK) {
                         printf("Recebido ACK para seq=%u\n", resp.header.seq_num);
@@ -355,11 +372,16 @@ int send_message(const char *destination, const char *message, int len) {
 
 // Recebe mensagem UDP (blocking)
 int receive_message(char *buffer, int bufsize) {
+    if (!buffer || bufsize <= 0) {
+        fprintf(stderr, "Buffer inválido para recebimento\n");
+        return -1;
+    }
+
     PowerUDPMessage pudp_msg;
     struct sockaddr_in src;
     socklen_t src_len = sizeof(src);
     
-    printf("DEBUG: Aguardando mensagem no socket UDP %d...\n", udp_sock);
+    printf("Aguardando mensagem no socket UDP %d...\n", udp_sock);
     
     int received = recvfrom(udp_sock, &pudp_msg, sizeof(pudp_msg), 0,
                            (struct sockaddr*)&src, &src_len);
@@ -369,7 +391,7 @@ int receive_message(char *buffer, int bufsize) {
         return -1;
     }
     
-    printf("DEBUG: Recebido %d bytes de %s:%d\n", 
+    printf("Recebido %d bytes de %s:%d\n", 
            received, 
            inet_ntoa(src.sin_addr), 
            ntohs(src.sin_port));
@@ -382,7 +404,24 @@ int receive_message(char *buffer, int bufsize) {
     
     // Verificar se é uma mensagem de dados
     if (pudp_msg.header.type != PUDP_DATA) {
-        printf("DEBUG: Ignorando mensagem não-dados (tipo=%d)\n", pudp_msg.header.type);
+        printf("Ignorando mensagem não-dados (tipo=%d)\n", pudp_msg.header.type);
+        return -1;
+    }
+    
+    // Verificar tamanho dos dados
+    int data_len = pudp_msg.header.data_len;
+    if (data_len > bufsize) {
+        fprintf(stderr, "Buffer muito pequeno para mensagem (necessário=%d, disponível=%d)\n",
+                data_len, bufsize);
+        
+        // Enviar NACK para mensagem muito grande
+        PowerUDPMessage nack;
+        nack.header.type = PUDP_NACK;
+        nack.header.seq_num = pudp_msg.header.seq_num;
+        nack.header.data_len = 0;
+        
+        sendto(udp_sock, &nack, sizeof(PowerUDPHeader), 0,
+               (struct sockaddr*)&src, src_len);
         return -1;
     }
     
@@ -405,12 +444,6 @@ int receive_message(char *buffer, int bufsize) {
         
         // Incrementar seq_num esperado para próximo pacote
         recv_seq_num++;
-    }
-    
-    // Verificar tamanho dos dados
-    int data_len = pudp_msg.header.data_len;
-    if (data_len > bufsize) {
-        data_len = bufsize;  // Truncar se buffer menor
     }
     
     // Copiar dados para buffer do usuário
