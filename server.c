@@ -119,6 +119,14 @@ void handle_new_registration(int client_fd) {
         ConfigMessage new_config;
         memcpy(&new_config, buffer + 1, sizeof(ConfigMessage));
         
+        // Validar valores da configuração
+        if (new_config.base_timeout < 100) {  // mínimo 100ms
+            new_config.base_timeout = 100;
+        }
+        if (new_config.max_retries < 1) {  // mínimo 1 tentativa
+            new_config.max_retries = 1;
+        }
+        
         printf("Recebido pedido de configuração:\n");
         printf("  Retransmissão: %s\n", new_config.enable_retransmission ? "Ativada" : "Desativada");
         printf("  Backoff: %s\n", new_config.enable_backoff ? "Ativado" : "Desativado");
@@ -130,11 +138,14 @@ void handle_new_registration(int client_fd) {
         memcpy(&current_config, &new_config, sizeof(ConfigMessage));
         
         // Enviar ACK
-        write(client_fd, "OK", 2);
-        
-        // Enviar multicast logo de seguida
-        printf("Enviando nova configuração para todos os clientes...\n");
-        multicast_config();
+        if (write(client_fd, "OK", 2) != 2) {
+            perror("write config response");
+            write(client_fd, "ER", 2);
+        } else {
+            // Enviar multicast logo de seguida
+            printf("Enviando nova configuração para todos os clientes...\n");
+            multicast_config();
+        }
     } else {
         printf("Recebido pedido desconhecido (%d bytes)\n", bytes_read);
         write(client_fd, "ER", 2);
@@ -158,14 +169,36 @@ void multicast_config() {
         return;
     }
     
-    struct sockaddr_in maddr = { .sin_family=AF_INET, .sin_port=htons(MCAST_PORT) };
-    inet_pton(AF_INET, MCAST_ADDR, &maddr.sin_addr);
+    // Validar configuração antes de enviar
+    if (current_config.base_timeout < 100) {
+        current_config.base_timeout = 100;  // mínimo 100ms
+    }
+    if (current_config.max_retries < 1) {
+        current_config.max_retries = 1;     // mínimo 1 tentativa
+    }
     
-    if (sendto(sock, &current_config, sizeof(current_config), 0,
-               (struct sockaddr*)&maddr, sizeof(maddr)) < 0) {
-        perror("sendto multicast");
-    } else {
-        printf("Configuração enviada via multicast\n");
+    struct sockaddr_in maddr = { 
+        .sin_family = AF_INET, 
+        .sin_port = htons(MCAST_PORT),
+        .sin_addr = {0}
+    };
+    
+    if (inet_pton(AF_INET, MCAST_ADDR, &maddr.sin_addr) <= 0) {
+        perror("inet_pton multicast");
+        close(sock);
+        return;
+    }
+    
+    // Tentar enviar algumas vezes para garantir que os clientes recebam
+    for (int i = 0; i < 3; i++) {
+        if (sendto(sock, &current_config, sizeof(current_config), 0,
+                   (struct sockaddr*)&maddr, sizeof(maddr)) < 0) {
+            perror("sendto multicast");
+            break;
+        } else {
+            printf("Configuração enviada via multicast (tentativa %d)\n", i + 1);
+            if (i < 2) usleep(100000);  // 100ms entre tentativas
+        }
     }
     
     close(sock);

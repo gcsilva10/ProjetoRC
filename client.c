@@ -46,6 +46,10 @@ static void *multicast_listener(void *arg) {
         int received = recvfrom(udp_sock, &config, sizeof(config), 0, 
                                (struct sockaddr*)&maddr, &addrlen);
         if (received == sizeof(ConfigMessage)) {
+            // Validar valores da configuração
+            if (config.base_timeout == 0) config.base_timeout = 1000;  // default 1 segundo
+            if (config.max_retries == 0) config.max_retries = 5;      // default 5 tentativas
+            
             memcpy(&current_config, &config, sizeof(ConfigMessage));
             printf("Nova configuração recebida via multicast:\n");
             printf("  Retransmissão: %s\n", config.enable_retransmission ? "Ativada" : "Desativada");
@@ -270,6 +274,10 @@ int send_message(const char *destination, const char *message, int len) {
     int success = 0;
 
     while (!success && attempts <= max) {
+        // Validar configuração atual
+        if (tbase <= 0) tbase = 1000;  // mínimo 1 segundo
+        if (max <= 0) max = 5;         // mínimo 5 tentativas
+        
         // Enviar pacote (se não estiver injetando perda)
         if (!should_drop_packet()) {
             ssize_t sent = sendto(udp_sock, &pudp_msg, total_size, 0, 
@@ -278,7 +286,7 @@ int send_message(const char *destination, const char *message, int len) {
                 fprintf(stderr, "Erro no sendto: %s (errno=%d)\n", strerror(errno), errno);
                 return -1;
             }
-            printf("DEBUG: Enviado pacote seq=%u para %s:%d (tentativa %d, bytes=%zd)\n", 
+            printf("Enviado pacote seq=%u para %s:%d (tentativa %d, bytes=%zd)\n", 
                    pudp_msg.header.seq_num, dest_ip, dest_port, attempts + 1, sent);
         } else {
             printf("Simulando perda do pacote seq=%u (tentativa %d)\n", 
@@ -306,7 +314,7 @@ int send_message(const char *destination, const char *message, int len) {
         FD_SET(udp_sock, &rfds);
         
         int rv = select(udp_sock + 1, &rfds, NULL, NULL, &tv);
-        if (rv > 0) {
+        if (rv > 0 && FD_ISSET(udp_sock, &rfds)) {
             // Recebeu alguma resposta
             PowerUDPMessage resp;
             struct sockaddr_in resp_addr;
@@ -315,35 +323,40 @@ int send_message(const char *destination, const char *message, int len) {
             int received = recvfrom(udp_sock, &resp, sizeof(resp), 0,
                                    (struct sockaddr*)&resp_addr, &resp_len);
             
-            if ((size_t)received >= sizeof(PowerUDPHeader)) {
-                // Verificar se a resposta veio do destino correto
-                if (resp_addr.sin_addr.s_addr != dest.sin_addr.s_addr || 
-                    resp_addr.sin_port != dest.sin_port) {
-                    printf("Ignorando resposta de endereço inesperado %s:%d\n",
-                           inet_ntoa(resp_addr.sin_addr), ntohs(resp_addr.sin_port));
+            if (received < (int)sizeof(PowerUDPHeader)) {
+                printf("Recebida resposta muito pequena (%d bytes), ignorando\n", received);
+                continue;
+            }
+            
+            if (resp_addr.sin_addr.s_addr != dest.sin_addr.s_addr || 
+                resp_addr.sin_port != dest.sin_port) {
+                printf("Ignorando resposta de endereço inesperado %s:%d\n",
+                       inet_ntoa(resp_addr.sin_addr), ntohs(resp_addr.sin_port));
+                continue;
+            }
+            
+            if (resp.header.seq_num == pudp_msg.header.seq_num) {
+                if (resp.header.type == PUDP_ACK) {
+                    printf("Recebido ACK para seq=%u\n", resp.header.seq_num);
+                    success = 1;
+                    // Incrementar seq_num para próxima mensagem
+                    if (current_config.enable_sequence) {
+                        send_seq_num++;
+                    }
+                    break;
+                } else if (resp.header.type == PUDP_NACK) {
+                    printf("Recebido NACK para seq=%u, retransmitindo\n", 
+                           resp.header.seq_num);
+                    // Aqui consideramos NACK como tentativa falha,
+                    // mas não incrementamos seq_num
+                    attempts++;
+                    last_retransmissions++;
                     continue;
                 }
-                
-                if (resp.header.seq_num == pudp_msg.header.seq_num) {
-                    if (resp.header.type == PUDP_ACK) {
-                        printf("Recebido ACK para seq=%u\n", resp.header.seq_num);
-                        success = 1;
-                        // Incrementar seq_num para próxima mensagem
-                        if (current_config.enable_sequence) {
-                            send_seq_num++;
-                        }
-                        break;
-                    } else if (resp.header.type == PUDP_NACK) {
-                        printf("Recebido NACK para seq=%u, retransmitindo\n", 
-                               resp.header.seq_num);
-                        // Aqui consideramos NACK como tentativa falha,
-                        // mas não incrementamos seq_num
-                    }
-                } else {
-                    // Resposta para outro pacote, ignorar
-                    printf("Recebida resposta para seq=%u, ignorando\n", 
-                           resp.header.seq_num);
-                }
+            } else {
+                // Resposta para outro pacote, ignorar
+                printf("Recebida resposta para seq=%u (esperado=%u), ignorando\n", 
+                       resp.header.seq_num, pudp_msg.header.seq_num);
             }
         }
         
@@ -408,23 +421,6 @@ int receive_message(char *buffer, int bufsize) {
         return -1;
     }
     
-    // Verificar tamanho dos dados
-    int data_len = pudp_msg.header.data_len;
-    if (data_len > bufsize) {
-        fprintf(stderr, "Buffer muito pequeno para mensagem (necessário=%d, disponível=%d)\n",
-                data_len, bufsize);
-        
-        // Enviar NACK para mensagem muito grande
-        PowerUDPMessage nack;
-        nack.header.type = PUDP_NACK;
-        nack.header.seq_num = pudp_msg.header.seq_num;
-        nack.header.data_len = 0;
-        
-        sendto(udp_sock, &nack, sizeof(PowerUDPHeader), 0,
-               (struct sockaddr*)&src, src_len);
-        return -1;
-    }
-    
     // Verificar sequência se ativado
     if (current_config.enable_sequence) {
         if (pudp_msg.header.seq_num != recv_seq_num) {
@@ -437,13 +433,36 @@ int receive_message(char *buffer, int bufsize) {
             nack.header.seq_num = pudp_msg.header.seq_num;
             nack.header.data_len = 0;
             
-            sendto(udp_sock, &nack, sizeof(PowerUDPHeader), 0,
-                   (struct sockaddr*)&src, src_len);
+            if (sendto(udp_sock, &nack, sizeof(PowerUDPHeader), 0,
+                   (struct sockaddr*)&src, src_len) < 0) {
+                perror("sendto NACK");
+            } else {
+                printf("Enviado NACK para seq=%u\n", pudp_msg.header.seq_num);
+            }
             return -1;
         }
         
         // Incrementar seq_num esperado para próximo pacote
         recv_seq_num++;
+    }
+    
+    // Verificar tamanho dos dados
+    int data_len = pudp_msg.header.data_len;
+    if (data_len > bufsize) {
+        fprintf(stderr, "Buffer muito pequeno para mensagem (necessário=%d, disponível=%d)\n",
+                data_len, bufsize);
+        
+        // Enviar NACK para mensagem muito grande
+        PowerUDPMessage nack;
+        nack.header.type = PUDP_NACK;
+        nack.header.seq_num = pudp_msg.header.seq_num;
+        nack.header.data_len = 0;
+        
+        if (sendto(udp_sock, &nack, sizeof(PowerUDPHeader), 0,
+               (struct sockaddr*)&src, src_len) < 0) {
+            perror("sendto NACK");
+        }
+        return -1;
     }
     
     // Copiar dados para buffer do usuário
@@ -455,11 +474,12 @@ int receive_message(char *buffer, int bufsize) {
     ack.header.seq_num = pudp_msg.header.seq_num;
     ack.header.data_len = 0;
     
-    sendto(udp_sock, &ack, sizeof(PowerUDPHeader), 0,
-           (struct sockaddr*)&src, src_len);
-    
-    printf("Recebido pacote seq=%u de %s, enviado ACK\n",
-           pudp_msg.header.seq_num, inet_ntoa(src.sin_addr));
+    if (sendto(udp_sock, &ack, sizeof(PowerUDPHeader), 0,
+           (struct sockaddr*)&src, src_len) < 0) {
+        perror("sendto ACK");
+    } else {
+        printf("Enviado ACK para seq=%u\n", pudp_msg.header.seq_num);
+    }
     
     return data_len;
 }
