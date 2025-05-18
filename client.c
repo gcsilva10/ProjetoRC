@@ -12,7 +12,7 @@
 #include <errno.h>
 #include "powerudp.h"
 
-#define TCP_TIMEOUT_SEC 2  // Timeout TCP em segundos
+#define TCP_TIMEOUT_SEC 2  // Reduzido de 5 para 2 segundos
 #define MCAST_ADDR "239.0.0.1"
 #define MCAST_PORT 54321
 
@@ -23,30 +23,30 @@ static ConfigMessage current_config = {1, 1, 1, 1000, 5};
 static int last_retransmissions = 0;
 static int last_delivery_time  = 0;  // em ms
 static int loss_probability = 0;      // 0–100%
-static uint32_t send_seq_num = 0;
-static uint32_t recv_seq_num = 0;
-static int local_udp_port = 0;
+static uint32_t send_seq_num = 0;     // Número de sequência para envio
+static uint32_t recv_seq_num = 0;     // Número de sequência esperado na recepção
+static int local_udp_port = 0;        // Porta UDP local usada
 
-// Decide se um pacote deve ser “perdido”
+// Helper: calcula se deve "perder" o pacote
 static int should_drop_packet() {
     if (loss_probability <= 0) return 0;
     return (rand() % 100) < loss_probability;
 }
 
-// Thread que escuta configurações multicast
+// Thread para receber atualizações multicast em background
 static void *multicast_listener(void *arg) {
     (void)arg;
     struct sockaddr_in maddr;
     socklen_t addrlen = sizeof(maddr);
     ConfigMessage config;
+
     while (1) {
-        int rec = recvfrom(udp_sock, &config, sizeof(config), 0,
-                           (struct sockaddr*)&maddr, &addrlen);
-        if (rec == sizeof(config)) {
-            // validações mínimas
+        int received = recvfrom(udp_sock, &config, sizeof(config), 0,
+                               (struct sockaddr*)&maddr, &addrlen);
+        if (received == sizeof(ConfigMessage)) {
             if (config.base_timeout == 0) config.base_timeout = 1000;
-            if (config.max_retries == 0)    config.max_retries = 5;
-            memcpy(&current_config, &config, sizeof(config));
+            if (config.max_retries == 0)  config.max_retries = 5;
+            memcpy(&current_config, &config, sizeof(ConfigMessage));
             printf("Nova configuração recebida via multicast:\n");
             printf("  Retransmissão: %s\n", config.enable_retransmission ? "Ativada" : "Desativada");
             printf("  Backoff: %s\n",        config.enable_backoff        ? "Ativado"  : "Desativado");
@@ -58,12 +58,11 @@ static void *multicast_listener(void *arg) {
     return NULL;
 }
 
-int init_protocol_with_port(const char *server_ip, int server_port,
-                            const char *psk, int udp_port) {
+int init_protocol_with_port(const char *server_ip, int server_port, const char *psk, int udp_port) {
     srand(time(NULL));
     local_udp_port = udp_port;
 
-    // 1) TCP
+    // TCP
     tcp_sock = socket(AF_INET, SOCK_STREAM, 0);
     if (tcp_sock < 0) { perror("socket TCP"); return -1; }
     memset(&server_tcp_addr, 0, sizeof(server_tcp_addr));
@@ -75,11 +74,11 @@ int init_protocol_with_port(const char *server_ip, int server_port,
     struct timeval tv = { .tv_sec = TCP_TIMEOUT_SEC, .tv_usec = 0 };
     setsockopt(tcp_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    if (connect(tcp_sock, (struct sockaddr*)&server_tcp_addr,
-                sizeof(server_tcp_addr)) < 0) {
+    if (connect(tcp_sock, (struct sockaddr*)&server_tcp_addr, sizeof(server_tcp_addr)) < 0) {
         perror("connect TCP"); close(tcp_sock); return -1;
     }
-    // envia registo
+
+    // Registro
     RegisterMessage reg;
     strncpy(reg.psk, psk, PSK_LEN);
     if (write(tcp_sock, &reg, sizeof(reg)) != sizeof(reg)) {
@@ -92,7 +91,7 @@ int init_protocol_with_port(const char *server_ip, int server_port,
     }
     close(tcp_sock);
 
-    // 2) UDP
+    // UDP + Multicast
     udp_sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (udp_sock < 0) { perror("socket UDP"); return -1; }
     struct sockaddr_in local = {
@@ -110,6 +109,7 @@ int init_protocol_with_port(const char *server_ip, int server_port,
             local_udp_port = ntohs(actual.sin_port);
     }
     printf("Cliente UDP local: %d\n", local_udp_port);
+
     int reuse = 1;
     setsockopt(udp_sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 
@@ -140,11 +140,10 @@ int request_protocol_config(int enable_retransmission,
                             int enable_sequence,
                             uint16_t base_timeout,
                             uint8_t max_retries) {
-    // Reabre TCP
+    // Reabre TCP só para config
     tcp_sock = socket(AF_INET, SOCK_STREAM, 0);
     if (tcp_sock < 0) { perror("socket TCP cfg"); return -1; }
-    if (connect(tcp_sock, (struct sockaddr*)&server_tcp_addr,
-                sizeof(server_tcp_addr)) < 0) {
+    if (connect(tcp_sock, (struct sockaddr*)&server_tcp_addr, sizeof(server_tcp_addr)) < 0) {
         perror("connect TCP cfg"); close(tcp_sock); return -1;
     }
 
@@ -156,7 +155,7 @@ int request_protocol_config(int enable_retransmission,
         .max_retries           = max_retries
     };
 
-    // **Envio num único write()**
+    // Envio único
     uint8_t buf[1 + sizeof(ConfigMessage)];
     buf[0] = 'C';
     memcpy(buf + 1, &req, sizeof(req));
@@ -181,7 +180,8 @@ int send_message(const char *destination, const char *message, int len) {
         return -1;
     }
 
-    char dest_ip[64]; int dest_port = local_udp_port;
+    char dest_ip[64];
+    int dest_port = local_udp_port;
     strncpy(dest_ip, destination, sizeof(dest_ip)-1);
     char *sep = strchr(dest_ip, ':');
     if (sep) {
@@ -199,10 +199,7 @@ int send_message(const char *destination, const char *message, int len) {
         return -1;
     }
 
-    PowerUDPMessage pudp;
-    pudp.header.type    = PUDP_DATA;
-    pudp.header.seq_num = send_seq_num;
-    pudp.header.data_len= len;
+    PowerUDPMessage pudp = { .header = {PUDP_DATA, send_seq_num, (uint16_t)len} };
     memcpy(pudp.data, message, len);
 
     int total_size = sizeof(PowerUDPHeader) + len;
@@ -215,8 +212,7 @@ int send_message(const char *destination, const char *message, int len) {
 
     while (!success && attempts <= max) {
         if (!should_drop_packet()) {
-            sendto(udp_sock, &pudp, total_size, 0,
-                   (struct sockaddr*)&dest, sizeof(dest));
+            sendto(udp_sock, &pudp, total_size, 0, (struct sockaddr*)&dest, sizeof(dest));
         } else {
             printf("Perda simulada seq=%u\n", pudp.header.seq_num);
         }
@@ -228,24 +224,19 @@ int send_message(const char *destination, const char *message, int len) {
             if (timeout_ms > 8000) timeout_ms = 8000;
         }
 
-        struct timeval tv = {
-            .tv_sec  = timeout_ms / 1000,
-            .tv_usec = (timeout_ms % 1000) * 1000
-        };
+        struct timeval tv = {timeout_ms / 1000, (timeout_ms % 1000) * 1000};
         fd_set rfds; FD_ZERO(&rfds); FD_SET(udp_sock, &rfds);
 
         int rv = select(udp_sock+1, &rfds, NULL, NULL, &tv);
         if (rv > 0 && FD_ISSET(udp_sock, &rfds)) {
             PowerUDPMessage resp;
             struct sockaddr_in sa; socklen_t sl = sizeof(sa);
-            int rec = recvfrom(udp_sock, &resp, sizeof(resp), 0,
-                               (struct sockaddr*)&sa, &sl);
-            if (rec >= (int)sizeof(PowerUDPHeader)
-             && resp.header.seq_num == pudp.header.seq_num) {
+            int rec = recvfrom(udp_sock, &resp, sizeof(resp), 0, (struct sockaddr*)&sa, &sl);
+            if (rec >= (int)sizeof(PowerUDPHeader) &&
+                resp.header.seq_num == pudp.header.seq_num) {
                 if (resp.header.type == PUDP_ACK) {
                     success = 1;
-                    if (current_config.enable_sequence)
-                        send_seq_num++;
+                    if (current_config.enable_sequence) send_seq_num++;
                     break;
                 } else if (resp.header.type == PUDP_NACK) {
                     attempts++; last_retransmissions++;
@@ -259,7 +250,7 @@ int send_message(const char *destination, const char *message, int len) {
         }
     }
 
-    last_delivery_time = (int)((clock() - start)*1000/CLOCKS_PER_SEC);
+    last_delivery_time = (int)((clock() - start) * 1000 / CLOCKS_PER_SEC);
     return success ? len : -1;
 }
 
@@ -268,16 +259,14 @@ int receive_message(char *buffer, int bufsize) {
     PowerUDPMessage pudp;
     struct sockaddr_in src; socklen_t sl = sizeof(src);
 
-    int rec = recvfrom(udp_sock, &pudp, sizeof(pudp), 0,
-                       (struct sockaddr*)&src, &sl);
+    int rec = recvfrom(udp_sock, &pudp, sizeof(pudp), 0, (struct sockaddr*)&src, &sl);
     if (rec < (int)sizeof(PowerUDPHeader)) return -1;
     if (pudp.header.type != PUDP_DATA) return -1;
 
     if (current_config.enable_sequence) {
         if (pudp.header.seq_num != recv_seq_num) {
-            PowerUDPMessage nack = {{PUDP_NACK, pudp.header.seq_num,0}};
-            sendto(udp_sock, &nack, sizeof(PowerUDPHeader), 0,
-                   (struct sockaddr*)&src, sl);
+            PowerUDPMessage nack = { .header = {PUDP_NACK, pudp.header.seq_num, 0} };
+            sendto(udp_sock, &nack, sizeof(PowerUDPHeader), 0, (struct sockaddr*)&src, sl);
             return -1;
         }
         recv_seq_num++;
@@ -285,21 +274,19 @@ int receive_message(char *buffer, int bufsize) {
 
     int dlen = pudp.header.data_len;
     if (dlen > bufsize) {
-        PowerUDPMessage nack = {{PUDP_NACK, pudp.header.seq_num,0}};
-        sendto(udp_sock, &nack, sizeof(PowerUDPHeader), 0,
-               (struct sockaddr*)&src, sl);
+        PowerUDPMessage nack = { .header = {PUDP_NACK, pudp.header.seq_num, 0} };
+        sendto(udp_sock, &nack, sizeof(PowerUDPHeader), 0, (struct sockaddr*)&src, sl);
         return -1;
     }
 
     memcpy(buffer, pudp.data, dlen);
-    PowerUDPMessage ack = {{PUDP_ACK, pudp.header.seq_num,0}};
-    sendto(udp_sock, &ack, sizeof(PowerUDPHeader), 0,
-           (struct sockaddr*)&src, sl);
+    PowerUDPMessage ack = { .header = {PUDP_ACK, pudp.header.seq_num, 0} };
+    sendto(udp_sock, &ack, sizeof(PowerUDPHeader), 0, (struct sockaddr*)&src, sl);
     return dlen;
 }
 
 int get_last_message_stats(int *retransmissions, int *delivery_time) {
-    if (!retransmissions||!delivery_time) return -1;
+    if (!retransmissions || !delivery_time) return -1;
     *retransmissions = last_retransmissions;
     *delivery_time   = last_delivery_time;
     return 0;
@@ -311,4 +298,3 @@ void inject_packet_loss(int probability) {
     loss_probability = probability;
     printf("Perda simulada: %d%%\n", probability);
 }
-
