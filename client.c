@@ -26,6 +26,7 @@ static int loss_probability = 0;      // 0–100%
 static uint32_t send_seq_num = 0;     // Número de sequência para envio
 static uint32_t recv_seq_num = 0;     // Número de sequência esperado na recepção
 static int local_udp_port = 0;        // Porta UDP local usada
+static volatile int running = 1;       // Controle de execução das threads
 
 // Helper: calcula se deve "perder" o pacote
 static int should_drop_packet() {
@@ -192,7 +193,12 @@ int init_protocol(const char *server_ip, int server_port, const char *psk) {
 }
 
 void close_protocol() {
-    if (udp_sock >= 0) close(udp_sock);
+    running = 0;  // Sinalizar para threads pararem
+    if (udp_sock >= 0) {
+        shutdown(udp_sock, SHUT_RDWR);  // Força interrupção de recvfrom bloqueante
+        close(udp_sock);
+        udp_sock = -1;
+    }
     printf("Protocolo PowerUDP finalizado\n");
 }
 
